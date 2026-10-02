@@ -216,6 +216,19 @@
           </div>
         </div>
 
+        <!-- Month Filter (From-To) -->
+        <div class="panel" style="margin-top:12px;">
+          <h3>Month Filter</h3>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label for="reportFromInput" style="margin:0;font-weight:600">From</label>
+            <input id="reportFromInput" type="month" />
+            <label for="reportToInput" style="margin:0;font-weight:600">To</label>
+            <input id="reportToInput" type="month" />
+            <button id="clearReportRange" class="small">Clear</button>
+          </div>
+          <small class="muted">Filter transactions and reports by month range (inclusive). Leave empty to show current month.</small>
+        </div>
+
         <!-- Carry Over setting -->
         <div class="panel" style="margin-top:12px;">
           <h3>Carry Over</h3>
