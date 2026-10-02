@@ -1,4 +1,3 @@
-// js/app.js
 (() => {
   'use strict';
 
@@ -57,6 +56,19 @@
   function saveState() { writeState(state); }
 
   let txPageIndex = 0;
+
+  function normalizeSettings() {
+    state.settings = Object.assign({ theme: 'light', syncUrl: '', carryOver: false }, state.settings || {});
+    state.reportMonth = state.reportMonth || today.slice(0,7);
+  }
+
+  function getVisibleTransactions() {
+    const monthKey = currentMonth();
+    return (state.transactions || []).filter(tx => {
+      const key = String(tx.date || '').slice(0,7);
+      return !monthKey || key === monthKey;
+    });
+  }
 
   function repairTransactionIds() {
     let changed = false;
@@ -353,7 +365,7 @@
     const monthKey = currentMonth();
 
     const rowsHtml = bs.map(b => {
-      const spent = (state.transactions || []).filter(tx => String(tx.date || '').slice(0,7) === monthKey && tx.type === 'expense' && tx.category === b.category)
+      const spent = getVisibleTransactions().filter(tx => tx.type === 'expense' && tx.category === b.category)
         .reduce((s,t) => s + (Number(t.amount) || 0), 0);
 
       const remaining = Math.max(0, (Number(b.amount) || 0) - spent);
@@ -375,7 +387,7 @@
 
     let alertsChanged = false;
     bs.forEach(b => {
-      const spent = (state.transactions || []).filter(tx => String(tx.date || '').slice(0,7) === monthKey && tx.type === 'expense' && tx.category === b.category)
+      const spent = getVisibleTransactions().filter(tx => tx.type === 'expense' && tx.category === b.category)
         .reduce((s,t) => s + (Number(t.amount) || 0), 0);
 
       const pct = (Number(b.amount) || 0) > 0 ? Math.round((spent / (Number(b.amount) || 1)) * 100) : 0;
@@ -416,8 +428,7 @@
   }
 
   function renderDashboardStats() {
-    const monthKey = currentMonth();
-    const rows = (state.transactions || []).filter(tx => String(tx.date || '').slice(0,7) === monthKey);
+    const rows = getVisibleTransactions();
     const t = totals(rows);
     const cashflow = (t.income || 0) - (t.expense || 0) - (t.loan || 0) - (t.credit || 0);
 
@@ -490,7 +501,7 @@
     ctx.clearRect(0,0,canvas.width, canvas.height);
     ctx.save(); ctx.scale(devicePixelRatio, devicePixelRatio);
 
-    const months = getLastNMonthKeys(12);
+    const months = getLastNMonthKeys(12, `${currentMonth()}-01`);
     const values = computeMonthlyNetFlow(months).map(v => Math.round(v));
     const padLeft = 40, padRight = 12, padTop = 12, padBottom = 30;
     const w = (canvas.width / devicePixelRatio) - padLeft - padRight;
@@ -555,7 +566,7 @@
   }
 
   function renderHeaderStats() {
-    const xs = (state.transactions || []).filter(t => String(t.date || '').slice(0,7) === currentMonth());
+    const xs = getVisibleTransactions();
     const t = totals(xs);
     const remainingMoney = (t.income || 0) - (t.expense || 0) - (t.loan || 0) - (t.credit || 0);
     const now = new Date();
@@ -572,7 +583,7 @@
   }
 
   function renderTransactionsPage(pageIndex = 0) {
-    const xs = (state.transactions || []).slice().reverse();
+    const xs = getVisibleTransactions().slice().reverse();
     const start = pageIndex * PAGE_SIZE;
     const end = Math.min(xs.length, start + PAGE_SIZE);
     const slice = xs.slice(start, end);
@@ -598,7 +609,7 @@
       else loadBtn.style.display = 'inline-block';
     }
 
-    if ($('txCountList')) $('txCountList').textContent = `Transactions (${(state.transactions||[]).length})`;
+    if ($('txCountList')) $('txCountList').textContent = `Transactions (${xs.length})`;
   }
 
   function jsonpGet(url, params = {}) {
@@ -853,16 +864,34 @@
     if (topNav) topNav.classList.toggle('hidden', !wide);
   }
 
+  function syncMonthFilterControl() {
+    const monthInput = $('reportMonthInput');
+    if (monthInput) monthInput.value = currentMonth();
+  }
+
+  function bindCarryOverToggle() {
+    const carry = $('carryOverToggle');
+    if (!carry) return;
+    carry.checked = !!state.settings?.carryOver;
+    carry.onchange = (e) => {
+      state.settings = state.settings || {};
+      state.settings.carryOver = !!e.target.checked;
+      saveState();
+      toast(state.settings.carryOver ? 'Carry Over enabled' : 'Carry Over disabled');
+    };
+  }
+
   function showPage(id) {
     document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === id));
     document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('active', b.dataset.page === id));
     updateNavDisplay(id);
 
-    if (id === 'home') renderAll();
+    if (id === 'home' || id === 'dashboard') renderAll();
     if (id === 'transactions') { txPageIndex = 0; renderTransactionsPage(0); }
     if (id === 'settings') {
       const inp = $('syncUrlInput'); if (inp) inp.value = state.settings?.syncUrl || '';
-      ensureCarryToggleExists();
+      syncMonthFilterControl();
+      bindCarryOverToggle();
       const carry = $('carryOverToggle'); if (carry) carry.checked = !!state.settings?.carryOver;
     }
   }
@@ -913,10 +942,12 @@
     renderGoalsList();
     renderTrendChart();
     renderDashboardStats();
+    syncMonthFilterControl();
+    bindCarryOverToggle();
 
     if ($('month')) $('month').value = currentMonth();
     if ($('txCount')) $('txCount').textContent = `Activity (${(state.transactions||[]).length})`;
-    if ($('txCountList')) $('txCountList').textContent = `Transactions (${(state.transactions||[]).length})`;
+    if ($('txCountList')) $('txCountList').textContent = `Transactions (${getVisibleTransactions().length})`;
   }
 
   function greeting() {
@@ -935,6 +966,13 @@
       saveState();
       applyTheme();
     }));
+
+    $('reportMonthInput')?.addEventListener('change', (e) => {
+      const val = (e.target.value || '').trim();
+      state.reportMonth = val || today.slice(0,7);
+      saveState();
+      renderAll();
+    });
 
     $('addCategory')?.addEventListener('click', addCategoryFromUI);
     $('resetDefaultCategories')?.addEventListener('click', resetDefaultCategories);
@@ -1042,16 +1080,7 @@
       parent.appendChild(panel);
     }
 
-    const carry = $('carryOverToggle');
-    if (carry) {
-      carry.checked = !!state.settings?.carryOver;
-      carry.addEventListener('change', (e) => {
-        state.settings = state.settings || {};
-        state.settings.carryOver = !!e.target.checked;
-        saveState();
-        toast(state.settings.carryOver ? 'Carry Over enabled' : 'Carry Over disabled');
-      });
-    }
+    bindCarryOverToggle();
   }
 
   function firstDayOfMonthISO(monthStr) {
@@ -1113,7 +1142,7 @@
   function initPaginationControls() {
     const loadBtn = $('loadMoreTx');
     if (!loadBtn) return;
-    const total = (state.transactions || []).length;
+    const total = getVisibleTransactions().length;
     if (total > PAGE_SIZE) loadBtn.style.display = 'inline-block';
     else loadBtn.style.display = 'none';
   }
@@ -1125,7 +1154,7 @@
     state.budgets = Array.isArray(state.budgets) ? state.budgets : [];
     state.loans = Array.isArray(state.loans) ? state.loans : [];
     state.goals = Array.isArray(state.goals) ? state.goals : [];
-    if (!state.settings) state.settings = { theme: 'light', syncUrl: '', carryOver: false };
+    normalizeSettings();
 
     repairTransactionIds();
     applyTheme();
