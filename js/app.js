@@ -31,7 +31,9 @@
       currentType: 'expense',
       lastCarryMonth: null,
       budgetAlerts: {},
-      budgetsLastRefreshedMonth: null
+      budgetsLastRefreshedMonth: null,
+      reportFrom: null,
+      reportTo: null
     };
   }
 
@@ -60,14 +62,49 @@
   function normalizeSettings() {
     state.settings = Object.assign({ theme: 'light', syncUrl: '', carryOver: false }, state.settings || {});
     state.reportMonth = state.reportMonth || today.slice(0,7);
+    state.reportFrom = state.reportFrom || null;
+    state.reportTo = state.reportTo || null;
+  }
+
+  function monthKeyToDate(monthKey) {
+    return new Date(`${String(monthKey)}-01T00:00:00Z`);
+  }
+
+  function monthsBetween(startKey, endKey) {
+    if (!startKey || !endKey) return [];
+    let [sy, sm] = startKey.split('-').map(Number);
+    let [ey, em] = endKey.split('-').map(Number);
+    if (sy > ey || (sy === ey && sm > em)) {
+      const tmpy = sy, tmpm = sm;
+      sy = ey; sm = em;
+      ey = tmpy; em = tmpm;
+    }
+    const months = [];
+    let y = sy, m = sm;
+    while (y < ey || (y === ey && m <= em)) {
+      months.push(`${y}-${String(m).padStart(2,'0')}`);
+      m++;
+      if (m > 12) { m = 1; y++; }
+    }
+    return months;
   }
 
   function getVisibleTransactions() {
-    const monthKey = currentMonth();
-    return (state.transactions || []).filter(tx => {
-      const key = String(tx.date || '').slice(0,7);
-      return !monthKey || key === monthKey;
-    });
+    const from = state.reportFrom || null;
+    const to = state.reportTo || null;
+    if (from && to) {
+      const start = monthKeyToDate(from);
+      const endDate = monthKeyToDate(to);
+      const end = new Date(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 0, 23, 59, 59, 999);
+      return (state.transactions || []).filter(tx => {
+        const d = tx.date ? new Date(tx.date + 'T00:00:00') : null;
+        if (!d || Number.isNaN(d.getTime())) return false;
+        return d >= start && d <= end;
+      });
+    }
+
+    const monthKey = state.reportMonth || today.slice(0,7);
+    return (state.transactions || []).filter(tx => String(tx.date || '').slice(0,7) === monthKey);
   }
 
   function repairTransactionIds() {
@@ -107,7 +144,6 @@
     if (budgetCategorySelect) {
       budgetCategorySelect.innerHTML = (state.categories || []).map(c => `<option value="${esc(c.name)}">${esc(c.name)} • ${esc(c.type)}</option>`).join('') || `<option>General</option>`;
     }
-    // keep form category dropdown consistent with active type
     populateCategories();
   }
 
@@ -330,7 +366,7 @@
     applyRepayments();
     const host = $('loanBI'); if (!host) return;
     const monthKey = currentMonth();
-    const rows = (state.transactions || []).filter(tx => String(tx.date || '').slice(0,7) === monthKey);
+    const rows = getVisibleTransactions();
     const payback = rows.filter(tx => tx.type === 'expense' && tx.loanId).reduce((s, t) => s + (Number(t.amount) || 0), 0);
     const received = rows.filter(tx => tx.type === 'income' && tx.loanId).reduce((s, t) => s + (Number(t.amount) || 0), 0);
     const outstanding = (state.loans || []).reduce((s, l) => s + (Number(l.remaining) || 0), 0);
@@ -349,7 +385,6 @@
     `;
   }
 
-  // Budget progress bars + near/over alerts
   function renderBudgetReportSummary() {
     const host = $('budgetReport');
     if (!host) return;
@@ -361,8 +396,6 @@
       host.innerHTML = `<div class="muted">No budgets set</div>`;
       return;
     }
-
-    const monthKey = currentMonth();
 
     const rowsHtml = bs.map(b => {
       const spent = getVisibleTransactions().filter(tx => tx.type === 'expense' && tx.category === b.category)
@@ -501,7 +534,18 @@
     ctx.clearRect(0,0,canvas.width, canvas.height);
     ctx.save(); ctx.scale(devicePixelRatio, devicePixelRatio);
 
-    const months = getLastNMonthKeys(12, `${currentMonth()}-01`);
+    let months = [];
+    if (state.reportFrom && state.reportTo) {
+      months = monthsBetween(state.reportFrom, state.reportTo);
+    } else {
+      months = getLastNMonthKeys(12, `${currentMonth()}-01`);
+    }
+
+    if (!months.length) {
+      ctx.restore();
+      return;
+    }
+
     const values = computeMonthlyNetFlow(months).map(v => Math.round(v));
     const padLeft = 40, padRight = 12, padTop = 12, padBottom = 30;
     const w = (canvas.width / devicePixelRatio) - padLeft - padRight;
@@ -521,8 +565,8 @@
     }
 
     ctx.textAlign = 'center';
-    months.forEach((m) => {
-      const x = padLeft + (w * (months.indexOf(m) / (months.length - 1 || 1)));
+    months.forEach((m, idx) => {
+      const x = padLeft + (w * (idx / (months.length - 1 || 1)));
       const lab = m.slice(5); ctx.fillText(lab, x, padTop + h + 18);
     });
 
@@ -764,7 +808,6 @@
     }, delay);
   }
 
-  // FIXED: Save immediately closes pop-up and resets form without blocking UI
   function saveTransactionForm(e) {
     e.preventDefault();
 
@@ -800,13 +843,11 @@
       state.transactions.push(tx);
     }
 
-    // Persist and update UI immediately
     saveState();
     updateLoanRepaymentField();
     renderAll();
     toast('Saved');
 
-    // Reset form immediately to avoid stale state
     const form = $('form');
     if (form) {
       try { form.reset(); } catch (_) {}
@@ -817,16 +858,13 @@
       try { document.activeElement.blur(); } catch (_) {}
     }
 
-    // Ensure active tab stays consistent
     document.querySelectorAll('.tabs [data-type]').forEach(b => b.classList.toggle('active', b.dataset.type === state.currentType));
 
-    // Close popup in next tick to avoid focus/DOM race
     setTimeout(() => {
       showPage('home');
       renderAll();
     }, 20);
 
-    // Schedule sync asynchronously so UI never blocks
     setTimeout(() => scheduleSync(), 120);
   }
 
@@ -865,8 +903,10 @@
   }
 
   function syncMonthFilterControl() {
-    const monthInput = $('reportMonthInput');
-    if (monthInput) monthInput.value = currentMonth();
+    const fromInput = $('reportFromInput');
+    const toInput = $('reportToInput');
+    if (fromInput) fromInput.value = state.reportFrom || '';
+    if (toInput) toInput.value = state.reportTo || '';
   }
 
   function bindCarryOverToggle() {
@@ -967,10 +1007,26 @@
       applyTheme();
     }));
 
-    $('reportMonthInput')?.addEventListener('change', (e) => {
+    $('reportFromInput')?.addEventListener('change', (e) => {
       const val = (e.target.value || '').trim();
-      state.reportMonth = val || today.slice(0,7);
+      state.reportFrom = val || null;
       saveState();
+      renderAll();
+    });
+
+    $('reportToInput')?.addEventListener('change', (e) => {
+      const val = (e.target.value || '').trim();
+      state.reportTo = val || null;
+      saveState();
+      renderAll();
+    });
+
+    $('clearReportRange')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      state.reportFrom = null;
+      state.reportTo = null;
+      saveState();
+      syncMonthFilterControl();
       renderAll();
     });
 
